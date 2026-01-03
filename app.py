@@ -11,6 +11,8 @@ sys.path.insert(0, ".")
 from src.agent import run_agent, LeadsResponse, _lead_to_row
 from src.tools import write_leads_impl
 import re
+import pandas as pd
+from io import BytesIO
 
 # Page config
 st.set_page_config(
@@ -75,7 +77,7 @@ with st.sidebar:
     )
     
     st.divider()
-    st.caption("Results are saved to CSV automatically")
+    st.caption("📥 Download leads as Excel or CSV")
 
 
 def is_lead_search(query: str) -> bool:
@@ -150,6 +152,33 @@ def save_leads(result: LeadsResponse, query: str) -> str:
     return response.filepath if response.success else None
 
 
+def create_excel_download(result: LeadsResponse) -> bytes:
+    """Create Excel file in memory for download."""
+    if not result.leads:
+        return None
+    
+    # Convert leads to dataframe
+    data = []
+    for lead in result.leads:
+        row = _lead_to_row(lead)
+        data.append(row.model_dump())
+    
+    df = pd.DataFrame(data)
+    
+    # Reorder columns for better UX
+    priority_cols = ['name', 'phone', 'email', 'address', 'city', 'state', 'type', 'score', 'qualified', 'website']
+    existing_priority = [c for c in priority_cols if c in df.columns]
+    other_cols = [c for c in df.columns if c not in priority_cols]
+    df = df[existing_priority + other_cols]
+    
+    # Create Excel in memory
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False, sheet_name='Leads')
+    
+    return output.getvalue()
+
+
 # Main chat interface
 st.subheader("Ask me anything about roofing leads")
 
@@ -180,10 +209,30 @@ if prompt := st.chat_input("Find 10 home inspectors in Austin, TX"):
                     result = run_agent(prompt, output_type=LeadsResponse)
                     display_leads(result)
                     
-                    # Save to CSV
-                    filepath = save_leads(result, prompt)
-                    if filepath:
-                        st.success(f"💾 Saved to: {filepath}")
+                    # Download button for Excel
+                    if result.leads:
+                        excel_data = create_excel_download(result)
+                        filename = re.sub(r'[^a-zA-Z0-9\s]', '', prompt).replace(' ', '_')[:30]
+                        
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.download_button(
+                                label="📥 Download Excel",
+                                data=excel_data,
+                                file_name=f"leads_{filename}.xlsx",
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                            )
+                        with col2:
+                            # Also offer CSV
+                            rows = [_lead_to_row(lead) for lead in result.leads]
+                            df = pd.DataFrame([r.model_dump() for r in rows])
+                            csv_data = df.to_csv(index=False)
+                            st.download_button(
+                                label="📥 Download CSV",
+                                data=csv_data,
+                                file_name=f"leads_{filename}.csv",
+                                mime="text/csv"
+                            )
                     
                     # Store in history
                     st.session_state.messages.append({
